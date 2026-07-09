@@ -1,7 +1,7 @@
 // app.js — Vira frontend logic
 
 // ⚠️ Замени на адрес своего задеплоенного Worker после `wrangler deploy`
-const API_BASE = 'https://vira-messenger.YOUR-SUBDOMAIN.workers.dev';
+const API_BASE = 'https://vira-messenger.alibahsburiev20.workers.dev';
 const WS_BASE = API_BASE.replace('https://', 'wss://');
 
 let state = {
