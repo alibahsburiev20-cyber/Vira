@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+<title>Vira</title>
+<meta name="theme-color" content="#FDFBF7" />
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+  <!-- SPLASH -->
+  <div id="splash" class="splash">
+    <div class="splash-mark">
+      <svg viewBox="0 0 120 120" width="88" height="88">
+        <circle id="splash-ring" cx="60" cy="60" r="4" fill="none" stroke="#7A9E8E" stroke-width="3"/>
+        <circle id="splash-dot" cx="60" cy="60" r="7" fill="#7A9E8E"/>
+      </svg>
+    </div>
+    <div id="splash-word" class="splash-word">Vira</div>
+  </div>
+
+  <!-- AUTH SCREEN -->
+  <div id="auth-screen" class="screen hidden">
+    <div class="auth-card">
+      <div class="auth-logo">Vira</div>
+      <p class="auth-tagline">Тихое место для разговоров</p>
+
+      <div class="auth-tabs">
+        <button class="auth-tab active" data-tab="login">Вход</button>
+        <button class="auth-tab" data-tab="register">Регистрация</button>
+      </div>
+
+      <form id="login-form" class="auth-form">
+        <input type="text" id="login-username" placeholder="Имя пользователя" autocomplete="username" required />
+        <input type="password" id="login-password" placeholder="Пароль" autocomplete="current-password" required />
+        <button type="submit" class="btn-primary">Войти</button>
+        <p class="auth-error" id="login-error"></p>
+      </form>
+
+      <form id="register-form" class="auth-form hidden">
+        <input type="text" id="register-displayname" placeholder="Как вас называть" required />
+        <input type="text" id="register-username" placeholder="Имя пользователя" autocomplete="username" required />
+        <input type="password" id="register-password" placeholder="Пароль (мин. 6 символов)" autocomplete="new-password" required />
+        <button type="submit" class="btn-primary">Создать аккаунт</button>
+        <p class="auth-error" id="register-error"></p>
+      </form>
+    </div>
+  </div>
+
+  <!-- CHAT LIST SCREEN -->
+  <div id="chats-screen" class="screen hidden">
+    <header class="top-bar">
+      <span class="top-bar-title">Vira</span>
+      <button id="new-chat-btn" class="icon-btn" aria-label="Новый чат">+</button>
+    </header>
+    <div id="chats-list" class="chats-list"></div>
+    <div id="chats-empty" class="empty-state hidden">
+      <p>Пока нет разговоров</p>
+      <span>Нажмите «+», чтобы начать</span>
+    </div>
+  </div>
+
+  <!-- NEW CHAT MODAL -->
+  <div id="new-chat-modal" class="modal hidden">
+    <div class="modal-sheet">
+      <div class="modal-header">
+        <span>Новый чат</span>
+        <button id="close-modal-btn" class="icon-btn">×</button>
+      </div>
+      <input type="text" id="user-search-input" placeholder="Найти по имени пользователя" />
+      <div id="user-search-results" class="user-search-results"></div>
+      <div id="selected-users" class="selected-users hidden"></div>
+      <button id="create-group-btn" class="btn-primary hidden">Создать групповой чат</button>
+    </div>
+  </div>
+
+  <!-- CHAT VIEW SCREEN -->
+  <div id="chat-screen" class="screen hidden">
+    <header class="top-bar">
+      <button id="back-btn" class="icon-btn" aria-label="Назад">←</button>
+      <div class="chat-header-info">
+        <span id="chat-title" class="top-bar-title"></span>
+        <span id="chat-subtitle" class="chat-subtitle"></span>
+      </div>
+    </header>
+    <div id="messages-list" class="messages-list"></div>
+    <form id="message-form" class="message-form">
+      <input type="text" id="message-input" placeholder="Сообщение" autocomplete="off" />
+      <button type="submit" class="send-btn" aria-label="Отправить">↑</button>
+    </form>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
