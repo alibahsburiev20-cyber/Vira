@@ -1,0 +1,16 @@
+name = "vira-messenger"
+main = "src/index.js"
+compatibility_date = "2025-01-01"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "vira-db"
+database_id = "d845c8f2-6c82-4e73-b77b-4bec52aa489d"
+
+[[durable_objects.bindings]]
+name = "CHAT_ROOM"
+class_name = "ChatRoom"
+
+[[migrations]]
+tag = "v1"
+new_classes = ["ChatRoom"]
