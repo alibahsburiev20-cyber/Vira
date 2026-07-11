@@ -42,14 +42,21 @@ jobs:
           mkdir -p android/app/src/main/res/mipmap-xxxhdpi
           cp android-assets/icon-48.png  android/app/src/main/res/mipmap-mdpi/ic_launcher.png
           cp android-assets/icon-48.png  android/app/src/main/res/mipmap-mdpi/ic_launcher_round.png
+          cp android-assets/icon-48.png  android/app/src/main/res/mipmap-mdpi/ic_launcher_foreground.png
           cp android-assets/icon-72.png  android/app/src/main/res/mipmap-hdpi/ic_launcher.png
           cp android-assets/icon-72.png  android/app/src/main/res/mipmap-hdpi/ic_launcher_round.png
+          cp android-assets/icon-72.png  android/app/src/main/res/mipmap-hdpi/ic_launcher_foreground.png
           cp android-assets/icon-96.png  android/app/src/main/res/mipmap-xhdpi/ic_launcher.png
           cp android-assets/icon-96.png  android/app/src/main/res/mipmap-xhdpi/ic_launcher_round.png
+          cp android-assets/icon-96.png  android/app/src/main/res/mipmap-xhdpi/ic_launcher_foreground.png
           cp android-assets/icon-144.png android/app/src/main/res/mipmap-xxhdpi/ic_launcher.png
           cp android-assets/icon-144.png android/app/src/main/res/mipmap-xxhdpi/ic_launcher_round.png
+          cp android-assets/icon-144.png android/app/src/main/res/mipmap-xxhdpi/ic_launcher_foreground.png
           cp android-assets/icon-192.png android/app/src/main/res/mipmap-xxxhdpi/ic_launcher.png
           cp android-assets/icon-192.png android/app/src/main/res/mipmap-xxxhdpi/ic_launcher_round.png
+          cp android-assets/icon-192.png android/app/src/main/res/mipmap-xxxhdpi/ic_launcher_foreground.png
+          rm -f android/app/src/main/res/mipmap-anydpi-v26/ic_launcher.xml
+          rm -f android/app/src/main/res/mipmap-anydpi-v26/ic_launcher_round.xml
 
       - name: Sync Capacitor
         run: npx cap sync android
