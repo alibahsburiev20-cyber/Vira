@@ -33,6 +33,24 @@ jobs:
             npx cap add android
           fi
 
+      - name: Copy app icons into Android resources
+        run: |
+          mkdir -p android/app/src/main/res/mipmap-mdpi
+          mkdir -p android/app/src/main/res/mipmap-hdpi
+          mkdir -p android/app/src/main/res/mipmap-xhdpi
+          mkdir -p android/app/src/main/res/mipmap-xxhdpi
+          mkdir -p android/app/src/main/res/mipmap-xxxhdpi
+          cp android-assets/icon-48.png  android/app/src/main/res/mipmap-mdpi/ic_launcher.png
+          cp android-assets/icon-48.png  android/app/src/main/res/mipmap-mdpi/ic_launcher_round.png
+          cp android-assets/icon-72.png  android/app/src/main/res/mipmap-hdpi/ic_launcher.png
+          cp android-assets/icon-72.png  android/app/src/main/res/mipmap-hdpi/ic_launcher_round.png
+          cp android-assets/icon-96.png  android/app/src/main/res/mipmap-xhdpi/ic_launcher.png
+          cp android-assets/icon-96.png  android/app/src/main/res/mipmap-xhdpi/ic_launcher_round.png
+          cp android-assets/icon-144.png android/app/src/main/res/mipmap-xxhdpi/ic_launcher.png
+          cp android-assets/icon-144.png android/app/src/main/res/mipmap-xxhdpi/ic_launcher_round.png
+          cp android-assets/icon-192.png android/app/src/main/res/mipmap-xxxhdpi/ic_launcher.png
+          cp android-assets/icon-192.png android/app/src/main/res/mipmap-xxxhdpi/ic_launcher_round.png
+
       - name: Sync Capacitor
         run: npx cap sync android
 
