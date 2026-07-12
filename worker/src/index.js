@@ -106,7 +106,8 @@ export default {
       // ---------- CHATS ----------
       if (path === '/api/chats' && request.method === 'GET') {
         const { results } = await env.DB.prepare(
-          `SELECT c.id, c.type, c.name, c.created_at, cm.last_read_message_id
+          `SELECT c.id, c.type, c.name, c.description, c.avatar_color, c.created_at, c.created_by,
+                  cm.last_read_message_id, cm.role as my_role
            FROM chats c
            JOIN chat_members cm ON cm.chat_id = c.id
            WHERE cm.user_id = ?
@@ -147,9 +148,13 @@ export default {
       }
 
       if (path === '/api/chats' && request.method === 'POST') {
-        const { type, memberIds, name } = await request.json();
-        if (!['direct', 'group'].includes(type)) return json({ error: 'Invalid chat type' }, 400);
-        if (!Array.isArray(memberIds) || memberIds.length === 0) {
+        const { type, memberIds, name, description } = await request.json();
+        if (!['direct', 'group', 'channel'].includes(type)) return json({ error: 'Invalid chat type' }, 400);
+        if (type !== 'direct' && (!name || !name.trim())) {
+          return json({ error: 'Название обязательно для группы или канала' }, 400);
+        }
+        if (!Array.isArray(memberIds)) return json({ error: 'memberIds required' }, 400);
+        if (type === 'direct' && memberIds.length === 0) {
           return json({ error: 'memberIds required' }, 400);
         }
 
@@ -166,11 +171,16 @@ export default {
           if (existing) return json({ chatId: existing.id, existing: true });
         }
 
+        const avatarPalette = ['#B8D4C8', '#E8B4A0', '#C9B8D4', '#B4C7E8', '#D4C8A0'];
         const chatId = uuid();
         const now = Date.now();
         await env.DB.prepare(
-          `INSERT INTO chats (id, type, name, created_by, created_at) VALUES (?, ?, ?, ?, ?)`
-        ).bind(chatId, type, name || null, auth.userId, now).run();
+          `INSERT INTO chats (id, type, name, description, avatar_color, created_by, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?)`
+        ).bind(
+          chatId, type, name ? name.trim() : null, description ? description.trim() : null,
+          avatarPalette[Math.floor(Math.random() * avatarPalette.length)], auth.userId, now
+        ).run();
 
         for (const memberId of allMembers) {
           const role = memberId === auth.userId ? 'owner' : 'member';
@@ -182,7 +192,7 @@ export default {
         return json({ chatId, existing: false });
       }
 
-      // ---------- PHOTO UPLOAD (inactive until R2 is enabled) ----------
+      // ---------- PHOTO UPLOAD ----------
       const uploadMatch = path.match(/^\/api\/chats\/([^/]+)\/upload-url$/);
       if (uploadMatch && request.method === 'POST') {
         if (!env.MEDIA_BUCKET) {
@@ -197,6 +207,8 @@ export default {
         const { contentType } = await request.json();
         const key = `${chatId}/${uuid()}`;
 
+        // R2 doesn't do presigned PUT URLs the same way S3 does via binding;
+        // instead we proxy the upload through this same worker at /api/media/:key
         return json({
           uploadUrl: `${url.origin}/api/media/${encodeURIComponent(key)}`,
           publicUrl: `${url.origin}/api/media/${encodeURIComponent(key)}`,
@@ -211,6 +223,135 @@ export default {
         await env.MEDIA_BUCKET.put(key, request.body, {
           httpMetadata: { contentType: request.headers.get('Content-Type') || 'application/octet-stream' },
         });
+        return json({ ok: true });
+      }
+
+      // ---------- PROFILE ----------
+      if (path === '/api/me' && request.method === 'GET') {
+        const user = await env.DB.prepare(
+          'SELECT id, username, display_name, avatar_color, bio, created_at FROM users WHERE id = ?'
+        ).bind(auth.userId).first();
+        return json({ user });
+      }
+
+      if (path === '/api/me' && request.method === 'PUT') {
+        const { displayName, bio, avatarColor } = await request.json();
+        if (displayName !== undefined && !displayName.trim()) {
+          return json({ error: 'Имя не может быть пустым' }, 400);
+        }
+        const updates = [];
+        const binds = [];
+        if (displayName !== undefined) { updates.push('display_name = ?'); binds.push(displayName.trim()); }
+        if (bio !== undefined) { updates.push('bio = ?'); binds.push(bio.trim().slice(0, 200)); }
+        if (avatarColor !== undefined) { updates.push('avatar_color = ?'); binds.push(avatarColor); }
+        if (updates.length === 0) return json({ error: 'Nothing to update' }, 400);
+        binds.push(auth.userId);
+
+        await env.DB.prepare(`UPDATE users SET ${updates.join(', ')} WHERE id = ?`).bind(...binds).run();
+        const user = await env.DB.prepare(
+          'SELECT id, username, display_name, avatar_color, bio, created_at FROM users WHERE id = ?'
+        ).bind(auth.userId).first();
+        return json({ user });
+      }
+
+      if (path === '/api/me' && request.method === 'DELETE') {
+        // Wipe personal data but keep message rows intact (so other chat members
+        // still see history) — sender_id stays, but their user row is anonymized.
+        await env.DB.prepare(
+          `UPDATE users SET username = ?, display_name = 'Удалённый пользователь', bio = NULL,
+                            password_hash = '', password_salt = '' WHERE id = ?`
+        ).bind(`deleted_${auth.userId.slice(0, 8)}`, auth.userId).run();
+        return json({ ok: true });
+      }
+
+      const userProfileMatch = path.match(/^\/api\/users\/([^/]+)$/);
+      if (userProfileMatch && request.method === 'GET') {
+        const targetId = userProfileMatch[1];
+        const user = await env.DB.prepare(
+          'SELECT id, username, display_name, avatar_color, bio, last_seen, created_at FROM users WHERE id = ?'
+        ).bind(targetId).first();
+        if (!user) return json({ error: 'User not found' }, 404);
+        const ONLINE_THRESHOLD_MS = 30_000;
+        return json({
+          user: { ...user, online: Date.now() - user.last_seen < ONLINE_THRESHOLD_MS },
+        });
+      }
+
+      // ---------- CHANNEL / GROUP MANAGEMENT ----------
+      const membersMatch = path.match(/^\/api\/chats\/([^/]+)\/members$/);
+      if (membersMatch && request.method === 'POST') {
+        const chatId = membersMatch[1];
+        const membership = await env.DB.prepare(
+          'SELECT role FROM chat_members WHERE chat_id = ? AND user_id = ?'
+        ).bind(chatId, auth.userId).first();
+        if (!membership || membership.role === 'member') {
+          return json({ error: 'Только владелец или администратор может добавлять участников' }, 403);
+        }
+        const { userIds } = await request.json();
+        const now = Date.now();
+        for (const uid of userIds) {
+          const exists = await env.DB.prepare(
+            'SELECT 1 FROM chat_members WHERE chat_id = ? AND user_id = ?'
+          ).bind(chatId, uid).first();
+          if (!exists) {
+            await env.DB.prepare(
+              'INSERT INTO chat_members (chat_id, user_id, role, joined_at) VALUES (?, ?, ?, ?)'
+            ).bind(chatId, uid, 'member', now).run();
+          }
+        }
+        return json({ ok: true });
+      }
+
+      if (membersMatch && request.method === 'DELETE') {
+        const chatId = membersMatch[1];
+        const { userId: targetUserId } = await request.json();
+        const membership = await env.DB.prepare(
+          'SELECT role FROM chat_members WHERE chat_id = ? AND user_id = ?'
+        ).bind(chatId, auth.userId).first();
+
+        // allow leaving yourself, or owner/admin removing someone else
+        if (targetUserId !== auth.userId && (!membership || membership.role === 'member')) {
+          return json({ error: 'Недостаточно прав' }, 403);
+        }
+        await env.DB.prepare(
+          'DELETE FROM chat_members WHERE chat_id = ? AND user_id = ?'
+        ).bind(chatId, targetUserId).run();
+        return json({ ok: true });
+      }
+
+      const chatDetailMatch = path.match(/^\/api\/chats\/([^/]+)$/);
+      if (chatDetailMatch && request.method === 'GET') {
+        const chatId = chatDetailMatch[1];
+        const isMember = await env.DB.prepare(
+          'SELECT role FROM chat_members WHERE chat_id = ? AND user_id = ?'
+        ).bind(chatId, auth.userId).first();
+        if (!isMember) return json({ error: 'Not a member of this chat' }, 403);
+
+        const chat = await env.DB.prepare('SELECT * FROM chats WHERE id = ?').bind(chatId).first();
+        const { results: members } = await env.DB.prepare(
+          `SELECT u.id, u.username, u.display_name, u.avatar_color, u.last_seen, cm.role
+           FROM chat_members cm JOIN users u ON u.id = cm.user_id WHERE cm.chat_id = ?`
+        ).bind(chatId).all();
+
+        return json({ chat: { ...chat, members, myRole: isMember.role } });
+      }
+
+      if (chatDetailMatch && request.method === 'PUT') {
+        const chatId = chatDetailMatch[1];
+        const membership = await env.DB.prepare(
+          'SELECT role FROM chat_members WHERE chat_id = ? AND user_id = ?'
+        ).bind(chatId, auth.userId).first();
+        if (!membership || membership.role === 'member') {
+          return json({ error: 'Только владелец или администратор может изменять чат' }, 403);
+        }
+        const { name, description } = await request.json();
+        const updates = [];
+        const binds = [];
+        if (name !== undefined) { updates.push('name = ?'); binds.push(name.trim()); }
+        if (description !== undefined) { updates.push('description = ?'); binds.push(description.trim()); }
+        if (updates.length === 0) return json({ error: 'Nothing to update' }, 400);
+        binds.push(chatId);
+        await env.DB.prepare(`UPDATE chats SET ${updates.join(', ')} WHERE id = ?`).bind(...binds).run();
         return json({ ok: true });
       }
 
@@ -293,10 +434,15 @@ export default {
 
       if (msgMatch && request.method === 'POST') {
         const chatId = msgMatch[1];
-        const isMember = await env.DB.prepare(
-          'SELECT 1 FROM chat_members WHERE chat_id = ? AND user_id = ?'
+        const membership = await env.DB.prepare(
+          'SELECT role FROM chat_members WHERE chat_id = ? AND user_id = ?'
         ).bind(chatId, auth.userId).first();
-        if (!isMember) return json({ error: 'Not a member of this chat' }, 403);
+        if (!membership) return json({ error: 'Not a member of this chat' }, 403);
+
+        const chat = await env.DB.prepare('SELECT type FROM chats WHERE id = ?').bind(chatId).first();
+        if (chat.type === 'channel' && membership.role === 'member') {
+          return json({ error: 'Только владелец и администраторы канала могут отправлять сообщения' }, 403);
+        }
 
         const { content, mediaUrl } = await request.json();
         if ((!content || !content.trim()) && !mediaUrl) return json({ error: 'Empty message' }, 400);
@@ -351,18 +497,16 @@ export default {
       if (path === '/api/users/search' && request.method === 'GET') {
         const q = url.searchParams.get('q') || '';
         if (q.length < 2) return json({ users: [] });
+        // rank exact username prefix matches first, then display_name matches
         const { results } = await env.DB.prepare(
-          `SELECT id, username, display_name, avatar_color FROM users
-           WHERE username LIKE ? AND id != ? LIMIT 20`
-        ).bind(`%${q}%`, auth.userId).all();
+          `SELECT id, username, display_name, avatar_color,
+                  (CASE WHEN username LIKE ? THEN 0 ELSE 1 END) as rank
+           FROM users
+           WHERE (username LIKE ? OR display_name LIKE ?) AND id != ?
+           ORDER BY rank ASC, username ASC
+           LIMIT 20`
+        ).bind(`${q}%`, `%${q}%`, `%${q}%`, auth.userId).all();
         return json({ users: results });
-      }
-
-      if (path === '/api/me' && request.method === 'GET') {
-        const user = await env.DB.prepare(
-          'SELECT id, username, display_name, avatar_color FROM users WHERE id = ?'
-        ).bind(auth.userId).first();
-        return json({ user });
       }
 
       return json({ error: 'Not found' }, 404);
