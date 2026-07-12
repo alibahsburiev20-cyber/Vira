@@ -1,7 +1,7 @@
 // app.js — Vira frontend logic
 
 // ⚠️ Замени на адрес своего задеплоенного Worker после `wrangler deploy`
-const API_BASE = 'https://vira-messenger.alibahsburiev20.workers.dev';
+const API_BASE = 'https://vira-messenger.YOUR-SUBDOMAIN.workers.dev';
 const WS_BASE = API_BASE.replace('https://', 'wss://');
 
 let state = {
@@ -186,13 +186,32 @@ function escapeHtml(str) {
 }
 
 // ---------- new chat modal ----------
+let newChatType = 'direct';
+
 $('new-chat-btn').addEventListener('click', () => {
   state.selectedUserIds.clear();
+  newChatType = 'direct';
+  document.querySelectorAll('.chat-type-tab').forEach(t => t.classList.remove('active'));
+  document.querySelector('.chat-type-tab[data-type="direct"]').classList.add('active');
+  $('new-chat-name-input').classList.add('hidden');
+  $('new-chat-name-input').value = '';
   $('user-search-input').value = '';
   $('user-search-results').innerHTML = '';
   $('selected-users').classList.add('hidden');
+  $('selected-users').innerHTML = '';
   $('create-group-btn').classList.add('hidden');
+  $('create-group-btn').textContent = 'Создать';
   $('new-chat-modal').classList.remove('hidden');
+});
+
+document.querySelectorAll('.chat-type-tab').forEach(tab => {
+  tab.addEventListener('click', () => {
+    document.querySelectorAll('.chat-type-tab').forEach(t => t.classList.remove('active'));
+    tab.classList.add('active');
+    newChatType = tab.dataset.type;
+    $('new-chat-name-input').classList.toggle('hidden', newChatType === 'direct');
+    updateCreateButtonVisibility();
+  });
 });
 
 $('close-modal-btn').addEventListener('click', () => {
@@ -235,32 +254,37 @@ function toggleUserSelection(user) {
     state.selectedUserIds.add(user.id);
   }
 
-  if (state.selectedUserIds.size === 0) {
-    $('selected-users').classList.add('hidden');
-    $('create-group-btn').classList.add('hidden');
-  } else if (state.selectedUserIds.size === 1) {
+  if (newChatType === 'direct' && state.selectedUserIds.size === 1) {
     createChat('direct', [...state.selectedUserIds]);
-  } else {
-    $('selected-users').classList.remove('hidden');
-    $('create-group-btn').classList.remove('hidden');
+    return;
   }
 
+  $('selected-users').classList.toggle('hidden', state.selectedUserIds.size === 0);
+  updateCreateButtonVisibility();
   document.querySelectorAll('.user-result').forEach(el => el.classList.remove('selected'));
 }
 
+function updateCreateButtonVisibility() {
+  const hasEnough = newChatType === 'channel' ? true : state.selectedUserIds.size >= 1;
+  $('create-group-btn').classList.toggle('hidden', newChatType === 'direct' || !hasEnough);
+  $('create-group-btn').textContent = newChatType === 'channel' ? 'Создать канал' : 'Создать группу';
+}
+
 $('create-group-btn').addEventListener('click', () => {
-  createChat('group', [...state.selectedUserIds]);
+  const name = $('new-chat-name-input').value.trim();
+  if (!name) { alert('Введите название'); return; }
+  createChat(newChatType, [...state.selectedUserIds], name);
 });
 
-async function createChat(type, memberIds) {
+async function createChat(type, memberIds, name) {
   try {
     const { chatId } = await api('/api/chats', {
       method: 'POST',
-      body: JSON.stringify({ type, memberIds }),
+      body: JSON.stringify({ type, memberIds, name }),
     });
     $('new-chat-modal').classList.add('hidden');
     await loadChats();
-    openChat(chatId, null);
+    openChat(chatId, name || null);
   } catch (err) {
     alert(err.message);
   }
@@ -283,6 +307,28 @@ async function openChat(chatId, name) {
   $('chat-subtitle').textContent = '';
   showScreen('chat-screen');
   $('messages-list').innerHTML = '';
+  $('message-form').classList.remove('hidden');
+  const existingBanner = document.querySelector('.readonly-banner');
+  if (existingBanner) existingBanner.remove();
+
+  try {
+    const { chat } = await api(`/api/chats/${chatId}`);
+    state.currentChat = chat;
+    $('chat-title').textContent = chat.type === 'direct'
+      ? (chat.members.find(m => m.id !== state.user.id)?.display_name || 'Чат')
+      : chat.name;
+
+    if (chat.type === 'channel' && chat.myRole === 'member') {
+      $('message-form').classList.add('hidden');
+      const banner = document.createElement('div');
+      banner.className = 'readonly-banner';
+      banner.textContent = 'Только администраторы канала могут писать здесь';
+      $('chat-screen').insertBefore(banner, null);
+      $('chat-screen').appendChild(banner);
+    }
+  } catch (err) {
+    console.error(err);
+  }
 
   try {
     const { messages } = await api(`/api/chats/${chatId}/messages`);
@@ -296,7 +342,11 @@ async function openChat(chatId, name) {
   }
 
   connectWs(chatId);
-  refreshPresence(chatId);
+  if (state.currentChat && state.currentChat.type === 'direct') {
+    refreshPresence(chatId);
+  } else if (state.currentChat) {
+    $('chat-subtitle').textContent = `${state.currentChat.members.length} участников`;
+  }
 }
 
 async function markAsRead(chatId, messageId) {
@@ -352,6 +402,7 @@ $('message-form').addEventListener('submit', async (e) => {
       method: 'POST',
       body: JSON.stringify({ content }),
     });
+    // render locally right away for snappy feel; WS broadcast will skip it via dedupe
     renderMessage(message);
     scrollToBottom();
     markAsRead(state.currentChatId, message.id);
@@ -377,6 +428,8 @@ let typingIndicatorTimeout;
 
 function connectWs(chatId) {
   closeWs();
+  // Browsers can't send custom headers during WS handshake, so the token
+  // travels as a query param; the Worker checks it the same way as Authorization.
   const url = `${WS_BASE}/api/chats/${chatId}/ws?token=${encodeURIComponent(state.token)}`;
   const ws = new WebSocket(url);
   state.ws = ws;
@@ -386,7 +439,7 @@ function connectWs(chatId) {
       const data = JSON.parse(event.data);
 
       if (data.type === 'message' && data.message.chatId === state.currentChatId) {
-        if (document.querySelector(`[data-msg-id="${data.message.id}"]`)) return;
+        if (document.querySelector(`[data-msg-id="${data.message.id}"]`)) return; // already rendered
         renderMessage(data.message);
         scrollToBottom();
         markAsRead(state.currentChatId, data.message.id);
@@ -406,10 +459,13 @@ function connectWs(chatId) {
 }
 
 function markMessagesAsSeenInUI(upToMessageId) {
+  // add a small "read" tick to own messages up to and including this id
   const rows = [...document.querySelectorAll('.msg-row.mine')];
+  let reached = false;
   for (const row of rows) {
     const tick = row.querySelector('.read-tick');
     if (tick) tick.textContent = '✓✓';
+    if (row.dataset.msgId === upToMessageId) reached = true;
   }
 }
 
@@ -419,6 +475,131 @@ function closeWs() {
     state.ws = null;
   }
 }
+
+// ---------- my profile ----------
+$('my-profile-btn').addEventListener('click', openMyProfile);
+$('profile-back-btn').addEventListener('click', () => {
+  stopChatsAutoRefresh();
+  showScreen('chats-screen');
+  loadChats();
+  startChatsAutoRefresh();
+});
+
+async function openMyProfile() {
+  showScreen('my-profile-screen');
+  $('profile-save-status').textContent = '';
+  try {
+    const { user } = await api('/api/me');
+    $('my-profile-avatar').style.background = avatarColorFor(user.id);
+    $('my-profile-avatar').textContent = initials(user.display_name);
+    $('profile-displayname-input').value = user.display_name;
+    $('my-profile-username').textContent = `@${user.username}`;
+    $('profile-bio-input').value = user.bio || '';
+  } catch (err) { console.error(err); }
+}
+
+$('save-profile-btn').addEventListener('click', async () => {
+  const displayName = $('profile-displayname-input').value.trim();
+  const bio = $('profile-bio-input').value.trim();
+  if (!displayName) { $('profile-save-status').textContent = 'Имя не может быть пустым'; return; }
+  try {
+    const { user } = await api('/api/me', {
+      method: 'PUT',
+      body: JSON.stringify({ displayName, bio }),
+    });
+    state.user.displayName = user.display_name;
+    localStorage.setItem('vira_user', JSON.stringify(state.user));
+    $('profile-save-status').textContent = 'Сохранено';
+    setTimeout(() => { $('profile-save-status').textContent = ''; }, 2000);
+  } catch (err) {
+    $('profile-save-status').textContent = err.message;
+  }
+});
+
+$('delete-account-btn').addEventListener('click', async () => {
+  if (!confirm('Удалить аккаунт навсегда? Это действие необратимо.')) return;
+  try {
+    await api('/api/me', { method: 'DELETE' });
+    localStorage.removeItem('vira_token');
+    localStorage.removeItem('vira_user');
+    location.reload();
+  } catch (err) {
+    alert(err.message);
+  }
+});
+
+// ---------- other user's profile ----------
+$('user-profile-back-btn').addEventListener('click', () => {
+  showScreen('chat-screen');
+});
+
+async function openUserProfile(userId) {
+  showScreen('user-profile-screen');
+  try {
+    const { user } = await api(`/api/users/${userId}`);
+    $('user-profile-avatar').style.background = avatarColorFor(user.id);
+    $('user-profile-avatar').textContent = initials(user.display_name);
+    $('user-profile-name').textContent = user.display_name;
+    $('user-profile-username').textContent = `@${user.username}`;
+    $('user-profile-status').textContent = user.online ? 'в сети' : 'был(а) недавно';
+    $('user-profile-bio').textContent = user.bio || '';
+  } catch (err) { console.error(err); }
+}
+
+// ---------- chat info (group/channel members) ----------
+$('chat-info-btn').addEventListener('click', openChatInfo);
+$('chat-info-back-btn').addEventListener('click', () => showScreen('chat-screen'));
+
+async function openChatInfo() {
+  if (!state.currentChatId) return;
+
+  if (state.currentChat && state.currentChat.type === 'direct') {
+    const other = state.currentChat.members.find(m => m.id !== state.user.id);
+    if (other) openUserProfile(other.id);
+    return;
+  }
+
+  showScreen('chat-info-screen');
+  try {
+    const { chat } = await api(`/api/chats/${state.currentChatId}`);
+    $('chat-info-avatar').style.background = chat.avatar_color || avatarColorFor(chat.id);
+    $('chat-info-avatar').textContent = initials(chat.name || 'Чат');
+    $('chat-info-name').textContent = chat.name;
+    $('chat-info-description').textContent = chat.description || '';
+
+    const membersContainer = $('chat-info-members');
+    membersContainer.innerHTML = '';
+    chat.members.forEach(m => {
+      const row = document.createElement('div');
+      row.className = 'member-row';
+      row.innerHTML = `
+        <div class="avatar" style="background:${avatarColorFor(m.id)}; width:36px; height:36px; font-size:13px;">${initials(m.display_name)}</div>
+        <span class="member-name">${escapeHtml(m.display_name)}</span>
+        <span class="member-role">${m.role === 'owner' ? 'владелец' : m.role === 'admin' ? 'админ' : ''}</span>
+      `;
+      if (m.id !== state.user.id) {
+        row.style.cursor = 'pointer';
+        row.addEventListener('click', () => openUserProfile(m.id));
+      }
+      membersContainer.appendChild(row);
+    });
+  } catch (err) { console.error(err); }
+}
+
+$('leave-chat-btn').addEventListener('click', async () => {
+  if (!confirm('Покинуть этот чат?')) return;
+  try {
+    await api(`/api/chats/${state.currentChatId}/members`, {
+      method: 'DELETE',
+      body: JSON.stringify({ userId: state.user.id }),
+    });
+    showScreen('chats-screen');
+    loadChats();
+    startChatsAutoRefresh();
+  } catch (err) {
+    alert(err.message);
+  }
+});
 
 // ---------- boot ----------
 runSplash();

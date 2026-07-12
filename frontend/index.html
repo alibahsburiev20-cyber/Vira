@@ -53,6 +53,7 @@
   <!-- CHAT LIST SCREEN -->
   <div id="chats-screen" class="screen hidden">
     <header class="top-bar">
+      <button id="my-profile-btn" class="icon-btn" aria-label="Мой профиль">👤</button>
       <span class="top-bar-title">Vira</span>
       <button id="new-chat-btn" class="icon-btn" aria-label="Новый чат">+</button>
     </header>
@@ -70,10 +71,72 @@
         <span>Новый чат</span>
         <button id="close-modal-btn" class="icon-btn">×</button>
       </div>
+
+      <div class="chat-type-tabs">
+        <button class="chat-type-tab active" data-type="direct">Личный</button>
+        <button class="chat-type-tab" data-type="group">Группа</button>
+        <button class="chat-type-tab" data-type="channel">Канал</button>
+      </div>
+
+      <input type="text" id="new-chat-name-input" placeholder="Название" class="hidden" />
+
       <input type="text" id="user-search-input" placeholder="Найти по имени пользователя" />
       <div id="user-search-results" class="user-search-results"></div>
       <div id="selected-users" class="selected-users hidden"></div>
-      <button id="create-group-btn" class="btn-primary hidden">Создать групповой чат</button>
+      <button id="create-group-btn" class="btn-primary hidden">Создать</button>
+    </div>
+  </div>
+
+  <!-- MY PROFILE SCREEN -->
+  <div id="my-profile-screen" class="screen hidden">
+    <header class="top-bar">
+      <button id="profile-back-btn" class="icon-btn" aria-label="Назад">←</button>
+      <span class="top-bar-title">Профиль</span>
+    </header>
+    <div class="profile-body">
+      <div class="profile-avatar-large" id="my-profile-avatar"></div>
+      <input type="text" id="profile-displayname-input" class="profile-name-input" placeholder="Ваше имя" />
+      <div class="profile-username" id="my-profile-username"></div>
+      <textarea id="profile-bio-input" class="profile-bio-input" placeholder="О себе" maxlength="200"></textarea>
+      <button id="save-profile-btn" class="btn-primary">Сохранить</button>
+      <p class="profile-status" id="profile-save-status"></p>
+
+      <div class="profile-danger-zone">
+        <button id="delete-account-btn" class="btn-danger">Удалить аккаунт</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- OTHER USER PROFILE SCREEN -->
+  <div id="user-profile-screen" class="screen hidden">
+    <header class="top-bar">
+      <button id="user-profile-back-btn" class="icon-btn" aria-label="Назад">←</button>
+      <span class="top-bar-title">Профиль</span>
+    </header>
+    <div class="profile-body">
+      <div class="profile-avatar-large" id="user-profile-avatar"></div>
+      <div class="profile-display-name" id="user-profile-name"></div>
+      <div class="profile-username" id="user-profile-username"></div>
+      <div class="profile-online-status" id="user-profile-status"></div>
+      <p class="profile-bio-view" id="user-profile-bio"></p>
+    </div>
+  </div>
+
+  <!-- CHAT INFO SCREEN (group/channel members & settings) -->
+  <div id="chat-info-screen" class="screen hidden">
+    <header class="top-bar">
+      <button id="chat-info-back-btn" class="icon-btn" aria-label="Назад">←</button>
+      <span class="top-bar-title">Информация</span>
+    </header>
+    <div class="profile-body">
+      <div class="profile-avatar-large" id="chat-info-avatar"></div>
+      <div class="profile-display-name" id="chat-info-name"></div>
+      <p class="profile-bio-view" id="chat-info-description"></p>
+      <div class="members-section">
+        <div class="members-header">Участники</div>
+        <div id="chat-info-members"></div>
+      </div>
+      <button id="leave-chat-btn" class="btn-danger">Покинуть чат</button>
     </div>
   </div>
 
@@ -81,10 +144,11 @@
   <div id="chat-screen" class="screen hidden">
     <header class="top-bar">
       <button id="back-btn" class="icon-btn" aria-label="Назад">←</button>
-      <div class="chat-header-info">
+      <div class="chat-header-info" id="chat-header-info">
         <span id="chat-title" class="top-bar-title"></span>
         <span id="chat-subtitle" class="chat-subtitle"></span>
       </div>
+      <button id="chat-info-btn" class="icon-btn" aria-label="Информация">ⓘ</button>
     </header>
     <div id="messages-list" class="messages-list"></div>
     <form id="message-form" class="message-form">
