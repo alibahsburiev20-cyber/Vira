@@ -51,6 +51,7 @@ function runSplash() {
       if (state.token && state.user) {
         showScreen('chats-screen');
         loadChats();
+        startChatsAutoRefresh();
       } else {
         showScreen('auth-screen');
       }
@@ -83,6 +84,7 @@ $('login-form').addEventListener('submit', async (e) => {
     persistAuth(data);
     showScreen('chats-screen');
     loadChats();
+    startChatsAutoRefresh();
   } catch (err) {
     $('login-error').textContent = err.message;
   }
@@ -103,6 +105,7 @@ $('register-form').addEventListener('submit', async (e) => {
     persistAuth(data);
     showScreen('chats-screen');
     loadChats();
+    startChatsAutoRefresh();
   } catch (err) {
     $('register-error').textContent = err.message;
   }
@@ -116,12 +119,26 @@ function persistAuth(data) {
 }
 
 // ---------- chats list ----------
+let chatsRefreshInterval = null;
+
 async function loadChats() {
   try {
     const { chats } = await api('/api/chats');
     renderChats(chats);
   } catch (err) {
     console.error(err);
+  }
+}
+
+function startChatsAutoRefresh() {
+  stopChatsAutoRefresh();
+  chatsRefreshInterval = setInterval(loadChats, 15_000);
+}
+
+function stopChatsAutoRefresh() {
+  if (chatsRefreshInterval) {
+    clearInterval(chatsRefreshInterval);
+    chatsRefreshInterval = null;
   }
 }
 
@@ -136,16 +153,26 @@ function renderChats(chats) {
   list.innerHTML = '';
   $('chats-empty').classList.toggle('hidden', chats.length > 0);
 
+  const ONLINE_THRESHOLD_MS = 30_000;
+  const now = Date.now();
+
   chats.forEach(chat => {
     const name = chatDisplayName(chat);
+    const other = chat.type === 'direct' ? chat.members.find(m => m.id !== state.user.id) : null;
+    const isOnline = other && (now - other.last_seen < ONLINE_THRESHOLD_MS);
+
     const el = document.createElement('div');
     el.className = 'chat-item';
     el.innerHTML = `
-      <div class="avatar" style="background:${avatarColorFor(chat.id)}">${initials(name)}</div>
+      <div class="avatar-wrap">
+        <div class="avatar" style="background:${avatarColorFor(chat.id)}">${initials(name)}</div>
+        ${isOnline ? '<span class="online-dot"></span>' : ''}
+      </div>
       <div class="chat-item-body">
         <div class="chat-item-name">${escapeHtml(name)}</div>
-        <div class="chat-item-preview">${chat.lastMessage ? escapeHtml(chat.lastMessage.content) : 'Нет сообщений'}</div>
+        <div class="chat-item-preview">${chat.lastMessage ? escapeHtml(chat.lastMessage.media_url && !chat.lastMessage.content ? '📷 Фото' : chat.lastMessage.content) : 'Нет сообщений'}</div>
       </div>
+      ${chat.unreadCount > 0 ? `<div class="unread-badge">${chat.unreadCount > 99 ? '99+' : chat.unreadCount}</div>` : ''}
     `;
     el.addEventListener('click', () => openChat(chat.id, name));
     list.appendChild(el);
@@ -212,7 +239,6 @@ function toggleUserSelection(user) {
     $('selected-users').classList.add('hidden');
     $('create-group-btn').classList.add('hidden');
   } else if (state.selectedUserIds.size === 1) {
-    // direct chat — create immediately
     createChat('direct', [...state.selectedUserIds]);
   } else {
     $('selected-users').classList.remove('hidden');
@@ -243,14 +269,18 @@ async function createChat(type, memberIds) {
 // ---------- chat view ----------
 $('back-btn').addEventListener('click', () => {
   closeWs();
+  stopTypingPing();
   showScreen('chats-screen');
   loadChats();
+  startChatsAutoRefresh();
 });
 
 async function openChat(chatId, name) {
+  stopChatsAutoRefresh();
   state.currentChatId = chatId;
   state.currentChatName = name;
   $('chat-title').textContent = name || 'Чат';
+  $('chat-subtitle').textContent = '';
   showScreen('chat-screen');
   $('messages-list').innerHTML = '';
 
@@ -258,11 +288,34 @@ async function openChat(chatId, name) {
     const { messages } = await api(`/api/chats/${chatId}/messages`);
     messages.forEach(renderMessage);
     scrollToBottom();
+    if (messages.length > 0) {
+      markAsRead(chatId, messages[messages.length - 1].id);
+    }
   } catch (err) {
     console.error(err);
   }
 
   connectWs(chatId);
+  refreshPresence(chatId);
+}
+
+async function markAsRead(chatId, messageId) {
+  try {
+    await api(`/api/chats/${chatId}/read`, {
+      method: 'POST',
+      body: JSON.stringify({ messageId }),
+    });
+  } catch (err) { console.error(err); }
+}
+
+async function refreshPresence(chatId) {
+  try {
+    const { presence } = await api(`/api/chats/${chatId}/presence`);
+    const other = presence.find(p => p.userId !== state.user.id);
+    if (other) {
+      $('chat-subtitle').textContent = other.online ? 'в сети' : 'был(а) недавно';
+    }
+  } catch (err) { console.error(err); }
 }
 
 function renderMessage(msg) {
@@ -271,11 +324,13 @@ function renderMessage(msg) {
   row.className = `msg-row ${mine ? 'mine' : 'theirs'}`;
   row.dataset.msgId = msg.id;
   const time = new Date(msg.sent_at).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
+  const photoHtml = msg.media_url ? `<img src="${escapeHtml(msg.media_url)}" class="msg-photo" alt="" />` : '';
   row.innerHTML = `
     <div class="msg-bubble">
       ${!mine ? `<div class="msg-sender">${escapeHtml(msg.display_name || '')}</div>` : ''}
-      <div>${escapeHtml(msg.content)}</div>
-      <div class="msg-time">${time}</div>
+      ${photoHtml}
+      ${msg.content ? `<div>${escapeHtml(msg.content)}</div>` : ''}
+      <div class="msg-time">${time}${mine ? ' <span class="read-tick">✓</span>' : ''}</div>
     </div>
   `;
   $('messages-list').appendChild(row);
@@ -293,21 +348,35 @@ $('message-form').addEventListener('submit', async (e) => {
   if (!content || !state.currentChatId) return;
   input.value = '';
   try {
-    await api(`/api/chats/${state.currentChatId}/messages`, {
+    const { message } = await api(`/api/chats/${state.currentChatId}/messages`, {
       method: 'POST',
       body: JSON.stringify({ content }),
     });
-    // message will also arrive via WS broadcast; render locally right away for snappy feel
+    renderMessage(message);
+    scrollToBottom();
+    markAsRead(state.currentChatId, message.id);
   } catch (err) {
     alert(err.message);
   }
 });
 
+let typingTimeout;
+$('message-input').addEventListener('input', () => {
+  if (!state.ws || state.ws.readyState !== WebSocket.OPEN) return;
+  clearTimeout(typingTimeout);
+  state.ws.send(JSON.stringify({ type: 'typing' }));
+  typingTimeout = setTimeout(() => {}, 2000);
+});
+
+function stopTypingPing() {
+  clearTimeout(typingTimeout);
+}
+
 // ---------- websocket ----------
+let typingIndicatorTimeout;
+
 function connectWs(chatId) {
   closeWs();
-  // Browsers can't send custom headers during WS handshake, so the token
-  // travels as a query param; the Worker checks it the same way as Authorization.
   const url = `${WS_BASE}/api/chats/${chatId}/ws?token=${encodeURIComponent(state.token)}`;
   const ws = new WebSocket(url);
   state.ws = ws;
@@ -315,13 +384,33 @@ function connectWs(chatId) {
   ws.addEventListener('message', (event) => {
     try {
       const data = JSON.parse(event.data);
+
       if (data.type === 'message' && data.message.chatId === state.currentChatId) {
-        if (document.querySelector(`[data-msg-id="${data.message.id}"]`)) return; // already rendered
+        if (document.querySelector(`[data-msg-id="${data.message.id}"]`)) return;
         renderMessage(data.message);
         scrollToBottom();
+        markAsRead(state.currentChatId, data.message.id);
+      }
+
+      if (data.type === 'typing' && data.userId !== state.user.id) {
+        $('chat-subtitle').textContent = 'печатает...';
+        clearTimeout(typingIndicatorTimeout);
+        typingIndicatorTimeout = setTimeout(() => refreshPresence(state.currentChatId), 2500);
+      }
+
+      if (data.type === 'read' && data.userId !== state.user.id) {
+        markMessagesAsSeenInUI(data.messageId);
       }
     } catch (err) { console.error(err); }
   });
+}
+
+function markMessagesAsSeenInUI(upToMessageId) {
+  const rows = [...document.querySelectorAll('.msg-row.mine')];
+  for (const row of rows) {
+    const tick = row.querySelector('.read-tick');
+    if (tick) tick.textContent = '✓✓';
+  }
 }
 
 function closeWs() {
