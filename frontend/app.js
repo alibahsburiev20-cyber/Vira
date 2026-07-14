@@ -1,8 +1,8 @@
 // app.js — Vira frontend logic
 
 // ⚠️ Замени на адрес своего задеплоенного Worker после `wrangler deploy`
-const API_BASE = 'https://vira-messenger.alibahsburiev20.workers.dev';
-  const WS_BASE = API_BASE.replace('https://', 'wss://');
+const API_BASE = 'https://vira-messenger.YOUR-SUBDOMAIN.workers.dev';
+const WS_BASE = API_BASE.replace('https://', 'wss://');
 
 let state = {
   token: localStorage.getItem('vira_token') || null,
@@ -240,7 +240,7 @@ function renderUserResults(users) {
     if (state.selectedUserIds.has(u.id)) el.classList.add('selected');
     el.innerHTML = `
       <div class="avatar" style="background:${avatarColorFor(u.id)}; width:36px; height:36px; font-size:13px;">${initials(u.display_name)}</div>
-      <span>${escapeHtml(u.display_name)} <span style="color:var(--text-soft)">@${escapeHtml(u.username)}</span></span>
+      <span>${escapeHtml(u.display_name)}${u.is_bot ? ' <span class="bot-badge">бот</span>' : ''} <span style="color:var(--text-soft)">@${escapeHtml(u.username)}</span></span>
     `;
     el.addEventListener('click', () => toggleUserSelection(u));
     container.appendChild(el);
