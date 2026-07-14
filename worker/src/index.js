@@ -28,6 +28,194 @@ async function getAuthUser(request, env) {
   return payload; // { userId, username, iat, exp }
 }
 
+async function hashToken(token) {
+  const enc = new TextEncoder();
+  const buf = await crypto.subtle.digest('SHA-256', enc.encode(token));
+  return [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+function randomToken() {
+  const bytes = crypto.getRandomValues(new Uint8Array(24));
+  return [...bytes].map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+// Sends a message into a chat "as" the given userId (used by Mama_Boss and third-party bots),
+// persisting it and broadcasting over the chat's Durable Object exactly like a normal user message.
+async function sendMessageAsUser(env, chatId, userId, content) {
+  const id = crypto.randomUUID();
+  const now = Date.now();
+  await env.DB.prepare(
+    `INSERT INTO messages (id, chat_id, sender_id, content, sent_at) VALUES (?, ?, ?, ?, ?)`
+  ).bind(id, chatId, userId, content, now).run();
+
+  const sender = await env.DB.prepare(
+    'SELECT display_name, avatar_color FROM users WHERE id = ?'
+  ).bind(userId).first();
+
+  const payload = {
+    type: 'message',
+    message: {
+      id, chatId, sender_id: userId, content, media_url: null,
+      sent_at: now, display_name: sender?.display_name || 'Бот', avatar_color: sender?.avatar_color || '#7A9E8E',
+    },
+  };
+
+  const roomId = env.CHAT_ROOM.idFromName(chatId);
+  const room = env.CHAT_ROOM.get(roomId);
+  await room.fetch('https://internal/broadcast', { method: 'POST', body: JSON.stringify(payload) });
+}
+
+// Mama_Boss: a small stateful conversation for creating/managing bots, similar to @BotFather.
+// State is kept minimal by re-deriving it from the `bots` table each time rather than a session store.
+async function handleMamaBossMessage(env, chatId, userId, text) {
+  const mamaBoss = await env.DB.prepare("SELECT id FROM users WHERE username = 'Mama_Boss'").first();
+  if (!mamaBoss) return;
+
+  const trimmed = text.trim();
+  const reply = async (msg) => sendMessageAsUser(env, chatId, mamaBoss.id, msg);
+
+  if (trimmed === '/start' || trimmed === '/help') {
+    await reply(
+      'Привет! Я помогу создать бота для Vira.\n\n' +
+      '/newbot — создать нового бота\n' +
+      '/mybots — список ваших ботов\n' +
+      '/token <username бота> — показать токен ещё раз\n' +
+      '/setwebhook <username бота> <url> — задать адрес сервера бота\n' +
+      '/deletebot <username бота> — удалить бота'
+    );
+    return;
+  }
+
+  if (trimmed === '/newbot') {
+    await reply('Как назвать бота? Отправьте имя в следующем сообщении (например: Напоминалка).');
+    // Store a lightweight pending-state marker as a system message flag via bio field misuse is messy;
+    // instead we use a simple convention: the next non-command message from this user is treated as
+    // a bot name IF their last received message from Mama_Boss was this prompt. We check that here:
+    await env.DB.prepare(
+      `UPDATE chat_members SET last_read_message_id = 'PENDING_BOT_NAME' WHERE chat_id = ? AND user_id = ?`
+    ).bind(chatId, userId).run();
+    return;
+  }
+
+  if (trimmed === '/mybots') {
+    const { results } = await env.DB.prepare(
+      `SELECT u.username, u.display_name FROM bots b JOIN users u ON u.id = b.user_id
+       WHERE b.owner_user_id = ?`
+    ).bind(userId).all();
+    if (results.length === 0) {
+      await reply('У вас пока нет ботов. Отправьте /newbot, чтобы создать первого.');
+    } else {
+      await reply('Ваши боты:\n' + results.map(b => `@${b.username} (${b.display_name})`).join('\n'));
+    }
+    return;
+  }
+
+  if (trimmed.startsWith('/token ')) {
+    const botUsername = trimmed.slice(7).trim().replace(/^@/, '');
+    const bot = await env.DB.prepare(
+      `SELECT b.id FROM bots b JOIN users u ON u.id = b.user_id
+       WHERE u.username = ? AND b.owner_user_id = ?`
+    ).bind(botUsername, userId).first();
+    if (!bot) { await reply('Бот не найден или принадлежит не вам.'); return; }
+    await reply(
+      'Токен нельзя показать повторно из соображений безопасности — он показывается только один раз ' +
+      'при создании бота. Если вы его потеряли, удалите бота (/deletebot) и создайте нового.'
+    );
+    return;
+  }
+
+  if (trimmed.startsWith('/setwebhook ')) {
+    const parts = trimmed.slice(12).trim().split(/\s+/);
+    const botUsername = (parts[0] || '').replace(/^@/, '');
+    const webhookUrl = parts[1];
+    if (!botUsername || !webhookUrl) {
+      await reply('Использование: /setwebhook username_бота https://ваш-сервер.com/webhook');
+      return;
+    }
+    const bot = await env.DB.prepare(
+      `SELECT b.id FROM bots b JOIN users u ON u.id = b.user_id
+       WHERE u.username = ? AND b.owner_user_id = ?`
+    ).bind(botUsername, userId).first();
+    if (!bot) { await reply('Бот не найден или принадлежит не вам.'); return; }
+    await env.DB.prepare('UPDATE bots SET webhook_url = ? WHERE id = ?').bind(webhookUrl, bot.id).run();
+    await reply(`Webhook для @${botUsername} обновлён.`);
+    return;
+  }
+
+  if (trimmed.startsWith('/deletebot ')) {
+    const botUsername = trimmed.slice(11).trim().replace(/^@/, '');
+    const bot = await env.DB.prepare(
+      `SELECT b.id, b.user_id FROM bots b JOIN users u ON u.id = b.user_id
+       WHERE u.username = ? AND b.owner_user_id = ?`
+    ).bind(botUsername, userId).first();
+    if (!bot) { await reply('Бот не найден или принадлежит не вам.'); return; }
+    await env.DB.prepare('DELETE FROM bots WHERE id = ?').bind(bot.id).run();
+    await env.DB.prepare('DELETE FROM users WHERE id = ?').bind(bot.user_id).run();
+    await reply(`Бот @${botUsername} удалён.`);
+    return;
+  }
+
+  // Check if we're mid-flow waiting for a bot name (set by /newbot above)
+  const membership = await env.DB.prepare(
+    'SELECT last_read_message_id FROM chat_members WHERE chat_id = ? AND user_id = ?'
+  ).bind(chatId, userId).first();
+
+  if (membership && membership.last_read_message_id === 'PENDING_BOT_NAME') {
+    const displayName = trimmed.slice(0, 40);
+    const suggestedUsername = displayName.replace(/[^a-zA-Z0-9_]/g, '') + '_bot';
+
+    const existing = await env.DB.prepare('SELECT id FROM users WHERE username = ?')
+      .bind(suggestedUsername).first();
+    const finalUsername = existing ? `${suggestedUsername}${Math.floor(Math.random() * 10000)}` : suggestedUsername;
+
+    const botUserId = crypto.randomUUID();
+    const now = Date.now();
+    await env.DB.prepare(
+      `INSERT INTO users (id, username, display_name, password_hash, password_salt, avatar_color, created_at, last_seen, is_bot)
+       VALUES (?, ?, ?, '', '', '#C9B8D4', ?, ?, 1)`
+    ).bind(botUserId, finalUsername, displayName, now, now).run();
+
+    const token = randomToken();
+    const tokenHash = await hashToken(token);
+    const botId = crypto.randomUUID();
+    await env.DB.prepare(
+      `INSERT INTO bots (id, user_id, owner_user_id, token_hash, created_at) VALUES (?, ?, ?, ?, ?)`
+    ).bind(botId, botUserId, userId, tokenHash, now).run();
+
+    await env.DB.prepare(
+      `UPDATE chat_members SET last_read_message_id = NULL WHERE chat_id = ? AND user_id = ?`
+    ).bind(chatId, userId).run();
+
+    await reply(
+      `Готово! Бот @${finalUsername} создан.\n\n` +
+      `Токен (сохраните его, он больше не будет показан):\n${token}\n\n` +
+      `Настройте webhook командой:\n/setwebhook ${finalUsername} https://ваш-сервер.com/webhook\n\n` +
+      `Ваш сервер будет получать POST-запросы с сообщениями от пользователей и должен отвечать, ` +
+      `вызывая POST /api/bot/sendMessage с заголовком Authorization: Bearer <токен>.`
+    );
+    return;
+  }
+
+  await reply('Не понимаю эту команду. Отправьте /help, чтобы увидеть список команд.');
+}
+
+// Delivers an incoming user message to a third-party bot's webhook, if one is configured.
+async function deliverToBot(env, botUserId, chatId, fromUserId, content) {
+  const bot = await env.DB.prepare('SELECT webhook_url FROM bots WHERE user_id = ?').bind(botUserId).first();
+  if (!bot || !bot.webhook_url) return;
+
+  try {
+    await fetch(bot.webhook_url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chatId, fromUserId, content, timestamp: Date.now() }),
+    });
+  } catch (err) {
+    // Webhook delivery failures are non-fatal — the bot's server may be down or slow.
+    console.error('Bot webhook delivery failed:', err.message);
+  }
+}
+
 export default {
   async fetch(request, env) {
     if (request.method === 'OPTIONS') {
@@ -51,6 +239,28 @@ export default {
           ...CORS_HEADERS,
         },
       });
+    }
+
+    // ---------- BOT API (separate auth: bot token, not user JWT) ----------
+    if (path === '/api/bot/sendMessage' && request.method === 'POST') {
+      const authHeader = request.headers.get('Authorization') || '';
+      const token = authHeader.replace('Bearer ', '');
+      if (!token) return json({ error: 'Missing bot token' }, 401);
+
+      const tokenHash = await hashToken(token);
+      const bot = await env.DB.prepare('SELECT user_id FROM bots WHERE token_hash = ?').bind(tokenHash).first();
+      if (!bot) return json({ error: 'Invalid bot token' }, 401);
+
+      const { chatId, content } = await request.json();
+      if (!chatId || !content) return json({ error: 'chatId and content required' }, 400);
+
+      const isMember = await env.DB.prepare(
+        'SELECT 1 FROM chat_members WHERE chat_id = ? AND user_id = ?'
+      ).bind(chatId, bot.user_id).first();
+      if (!isMember) return json({ error: 'Bot is not a member of this chat' }, 403);
+
+      await sendMessageAsUser(env, chatId, bot.user_id, content.trim());
+      return json({ ok: true });
     }
 
     try {
@@ -473,6 +683,23 @@ export default {
           body: JSON.stringify(messagePayload),
         });
 
+        // If the other party in this chat is a bot, notify it. Mama_Boss (the
+        // built-in bot-creation assistant) is handled inline; third-party bots
+        // are notified via their registered webhook URL.
+        const { results: otherMembers } = await env.DB.prepare(
+          `SELECT u.id, u.is_bot, u.username FROM chat_members cm JOIN users u ON u.id = cm.user_id
+           WHERE cm.chat_id = ? AND cm.user_id != ?`
+        ).bind(chatId, auth.userId).all();
+
+        for (const other of otherMembers) {
+          if (!other.is_bot) continue;
+          if (other.username === 'Mama_Boss') {
+            await handleMamaBossMessage(env, chatId, auth.userId, (content || '').trim());
+          } else {
+            await deliverToBot(env, other.id, chatId, auth.userId, (content || '').trim());
+          }
+        }
+
         return json({ message: messagePayload.message });
       }
 
@@ -499,7 +726,7 @@ export default {
         if (q.length < 2) return json({ users: [] });
         // rank exact username prefix matches first, then display_name matches
         const { results } = await env.DB.prepare(
-          `SELECT id, username, display_name, avatar_color,
+          `SELECT id, username, display_name, avatar_color, is_bot,
                   (CASE WHEN username LIKE ? THEN 0 ELSE 1 END) as rank
            FROM users
            WHERE (username LIKE ? OR display_name LIKE ?) AND id != ?
